@@ -223,27 +223,35 @@ def render_dashboard(data, partnership, p1_name, p2_name):
     col5.metric("Total Expenses", format_currency(data['business_expenses']))
     col6.metric(f"Net Profit ({partnership})", format_currency(data['realized_net_profit']))
     
-    # Formatted balances indicating who owes who
-    p1_bal_str = format_currency(abs(data['p1_balance']))
-    p1_bal_label = f"Business Owes {p1_name} (Take)" if data['p1_balance'] >= 0 else f"{p1_name} Owes Business (Give)"
-    col7.metric(p1_bal_label, p1_bal_str, delta=data['p1_balance'], delta_color="normal")
+    # Simpler Partner Status Calculations
+    p1_rightful = data['p1_contribution'] + data['p1_profit_share']
+    p1_holds = data['received_by_p1'] - data['withdrawn_p1']
+    p1_diff = p1_holds - p1_rightful # Positive = Holds extra (needs to pay)
     
-    p2_bal_str = format_currency(abs(data['p2_balance']))
-    p2_bal_label = f"Business Owes {p2_name} (Take)" if data['p2_balance'] >= 0 else f"{p2_name} Owes Business (Give)"
-    col8.metric(p2_bal_label, p2_bal_str, delta=data['p2_balance'], delta_color="normal")
+    p2_rightful = data['p2_contribution'] + data['p2_profit_share']
+    p2_holds = data['received_by_p2'] - data['withdrawn_p2']
+    p2_diff = p2_holds - p2_rightful # Positive = Holds extra (needs to pay)
+
+    if p1_diff > 0:
+        col7.metric(f"{p1_name} Needs to GIVE", format_currency(abs(p1_diff)))
+    else:
+        col7.metric(f"{p1_name} Needs to TAKE", format_currency(abs(p1_diff)))
+
+    if p2_diff > 0:
+        col8.metric(f"{p2_name} Needs to GIVE", format_currency(abs(p2_diff)))
+    else:
+        col8.metric(f"{p2_name} Needs to TAKE", format_currency(abs(p2_diff)))
 
     st.markdown("---")
     
     # Clear settlement instructions
-    st.info(f"💡 **How to Settle Accounts:** If `{p1_name}` and `{p2_name}` want to clear all balances right now (distribute the cash held):")
-    if data['p1_balance'] > 0 and data['p2_balance'] < 0:
-        st.success(f"💸 **{p2_name}** needs to pay **{p1_name}** the amount of **{format_currency(abs(data['p2_balance']))}**")
-    elif data['p2_balance'] > 0 and data['p1_balance'] < 0:
-        st.success(f"💸 **{p1_name}** needs to pay **{p2_name}** the amount of **{format_currency(abs(data['p1_balance']))}**")
-    elif data['p1_balance'] == 0 and data['p2_balance'] == 0:
-        st.success("✅ All accounts are perfectly settled. Nobody owes anyone.")
+    st.info(f"💡 **Simple Account Settlement:**")
+    if p1_diff > 0:
+        st.error(f"💸 **{p1_name}** is holding extra money. {p1_name} must pay **{p2_name}** exactly **{format_currency(abs(p1_diff))}** to settle accounts.")
+    elif p2_diff > 0:
+        st.error(f"💸 **{p2_name}** is holding extra money. {p2_name} must pay **{p1_name}** exactly **{format_currency(abs(p2_diff))}** to settle accounts.")
     else:
-        st.warning("⚠️ Both partners are owed money by the business. You need to wait for pending settlements to arrive to pay out profits.")
+        st.success("✅ All accounts are perfectly settled. Nobody owes anyone.")
 
     st.markdown("---")
 
@@ -411,12 +419,13 @@ def render_settlements(partnership, p1_name, p2_name):
             st.info("No settlements recorded yet.")
 
 def render_partner_balance(data, partnership, p1_name, p2_name):
-    st.title(f"⚖️ Partner Accounting & Profit Sharing ({partnership})")
+    st.title(f"⚖️ Simple Partner Accounting ({partnership})")
     
     st.markdown(f"""
-    **How the Settlement is Divided:**
-    1. **Return Investments:** First, we pay back {p1_name} and {p2_name} exactly what they spent from their pockets.
-    2. **Divide Profit:** Any settlement money left over after returning the investments is profit, which is divided 50-50.
+    **How we calculate this easily:**
+    1. We calculate how much money you **SHOULD HAVE** (Money you invested + Your half of the profit).
+    2. We check how much money you **CURRENTLY HOLD** (Settlements in your bank - Money you gave out).
+    3. If you hold more than you should, you give the extra to your partner. If you hold less, you take it from them.
     """)
     
     total_received = data['received_settlement']
@@ -426,63 +435,78 @@ def render_partner_balance(data, partnership, p1_name, p2_name):
     st.info(f"**Overall Business Status:** Total Settlement Received: **{format_currency(total_received)}** | Total Investments Made: **{format_currency(total_invested)}**")
 
     if profit_or_loss < 0:
-        st.warning(f"⚠️ **Pending Settlements Needed:** The business has currently invested more than it has received back in settlements. (Shortfall: {format_currency(abs(profit_or_loss))}). The balances below show who has paid more out of pocket so far.")
+        st.warning(f"⚠️ **Pending Settlements Needed:** The business has not received enough settlements yet. Loss right now: {format_currency(abs(profit_or_loss))}.")
     else:
-        st.success(f"🎉 **Profitable!** The business has recovered all investments and generated a profit of {format_currency(profit_or_loss)} to be split 50-50.")
+        st.success(f"🎉 **Profitable!** All investments recovered. Total Profit: {format_currency(profit_or_loss)} to be split 50-50.")
 
     st.markdown("---")
     
+    # Logical calculations
+    p1_rightful = data['p1_contribution'] + data['p1_profit_share']
+    p1_holds = data['received_by_p1'] - data['withdrawn_p1']
+    p1_diff = p1_holds - p1_rightful 
+    
+    p2_rightful = data['p2_contribution'] + data['p2_profit_share']
+    p2_holds = data['received_by_p2'] - data['withdrawn_p2']
+    p2_diff = p2_holds - p2_rightful
+
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader(f"{p1_name}'s Account")
-        st.write(f"**1. Investment to Return:** {format_currency(data['p1_contribution'])}")
-        st.write(f"**2. 50% Profit Share:** {format_currency(data['p1_profit_share'])}")
-        st.write(f"*(Less) Settlements Kept:* {format_currency(data['received_by_p1'])}")
-        st.write(f"*(Less) Withdrawals:* {format_currency(data['withdrawn_p1'])}")
+        st.subheader(f"👤 {p1_name}'s Summary")
+        st.write(f"1. Money Invested (To get back): **{format_currency(data['p1_contribution'])}**")
+        st.write(f"2. Profit Share (50%): **{format_currency(data['p1_profit_share'])}**")
+        st.markdown(f"#### 💰 {p1_name} SHOULD HAVE: {format_currency(p1_rightful)}")
         st.markdown("---")
-        st.markdown(f"### Final Balance: {format_currency(data['p1_balance'])}")
-        if data['p1_balance'] > 0:
-            st.success(f"🟢 {p1_name} needs to take {format_currency(data['p1_balance'])}")
-        elif data['p1_balance'] < 0:
-            st.error(f"🔴 {p1_name} needs to give {format_currency(abs(data['p1_balance']))}")
+        st.write(f"Settlements in {p1_name}'s Bank: **{format_currency(data['received_by_p1'])}**")
+        st.write(f"Minus Payments Given Out: **{format_currency(data['withdrawn_p1'])}**")
+        st.markdown(f"#### 🏦 {p1_name} CURRENTLY HOLDS: {format_currency(p1_holds)}")
+        st.markdown("---")
+        
+        if p1_diff > 0:
+            st.error(f"🔴 {p1_name} holds {format_currency(abs(p1_diff))} EXTRA. Needs to GIVE to {p2_name}.")
+        elif p1_diff < 0:
+            st.success(f"🟢 {p1_name} is SHORT by {format_currency(abs(p1_diff))}. Needs to TAKE from {p2_name}.")
         else:
             st.info("Settled")
             
     with col2:
-        st.subheader(f"{p2_name}'s Account")
-        st.write(f"**1. Investment to Return:** {format_currency(data['p2_contribution'])}")
-        st.write(f"**2. 50% Profit Share:** {format_currency(data['p2_profit_share'])}")
-        st.write(f"*(Less) Settlements Kept:* {format_currency(data['received_by_p2'])}")
-        st.write(f"*(Less) Withdrawals:* {format_currency(data['withdrawn_p2'])}")
+        st.subheader(f"👤 {p2_name}'s Summary")
+        st.write(f"1. Money Invested (To get back): **{format_currency(data['p2_contribution'])}**")
+        st.write(f"2. Profit Share (50%): **{format_currency(data['p2_profit_share'])}**")
+        st.markdown(f"#### 💰 {p2_name} SHOULD HAVE: {format_currency(p2_rightful)}")
         st.markdown("---")
-        st.markdown(f"### Final Balance: {format_currency(data['p2_balance'])}")
-        if data['p2_balance'] > 0:
-            st.success(f"🟢 {p2_name} needs to take {format_currency(data['p2_balance'])}")
-        elif data['p2_balance'] < 0:
-            st.error(f"🔴 {p2_name} needs to give {format_currency(abs(data['p2_balance']))}")
+        st.write(f"Settlements in {p2_name}'s Bank: **{format_currency(data['received_by_p2'])}**")
+        st.write(f"Minus Payments Given Out: **{format_currency(data['withdrawn_p2'])}**")
+        st.markdown(f"#### 🏦 {p2_name} CURRENTLY HOLDS: {format_currency(p2_holds)}")
+        st.markdown("---")
+        
+        if p2_diff > 0:
+            st.error(f"🔴 {p2_name} holds {format_currency(abs(p2_diff))} EXTRA. Needs to GIVE to {p1_name}.")
+        elif p2_diff < 0:
+            st.success(f"🟢 {p2_name} is SHORT by {format_currency(abs(p2_diff))}. Needs to TAKE from {p1_name}.")
         else:
             st.info("Settled")
 
     st.markdown("---")
-    st.subheader("Record Partner Withdrawal / Payment")
-    st.write("Use this to record when a partner withdraws money or pays the other partner to settle balances.")
+    st.subheader("💸 Make a Payment / Settlement")
+    st.write("Use this form when one partner actually pays the other partner to clear the accounts.")
     
     with st.form("withdrawal_form"):
         c1, c2, c3 = st.columns(3)
         with c1:
-            w_date = st.date_input("Date", date.today())
+            w_date = st.date_input("Payment Date", date.today())
         with c2:
-            w_partner = st.selectbox("Partner Withdrawing", [p1_name, p2_name])
+            w_partner = st.selectbox("Who is sending the money?", [p1_name, p2_name])
         with c3:
             w_amount = st.number_input("Amount (₹)", min_value=0.0, step=100.0)
         
-        w_notes = st.text_input("Notes (e.g., Routine profit withdrawal)")
+        w_notes = st.text_input("Notes", value="Settling account balance")
         
-        if st.form_submit_button("Record Withdrawal"):
+        if st.form_submit_button("Record Payment"):
             execute_query("INSERT INTO withdrawals (withdrawal_date, partner, amount, notes, created_at, partnership) VALUES (?, ?, ?, ?, ?, ?)",
                           (w_date.strftime("%Y-%m-%d"), w_partner, w_amount, w_notes, datetime.now().isoformat(), partnership))
-            st.success("Withdrawal recorded successfully!")
+            st.success("Payment recorded successfully! Balances updated.")
             st.rerun()
 
 def render_transaction_history(partnership):
