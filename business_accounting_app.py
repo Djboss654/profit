@@ -74,6 +74,22 @@ def init_db():
                  notes TEXT,
                  created_at TEXT)''')
 
+    # --- NEW MIGRATION FOR MULTI-PARTNERSHIP ---
+    tables = ['batches', 'expenses', 'settlements', 'withdrawals']
+    for tbl in tables:
+        try:
+            c.execute(f"ALTER TABLE {tbl} ADD COLUMN partnership TEXT DEFAULT 'Sandeep & Harshal'")
+        except sqlite3.OperationalError:
+            pass
+
+    # Update old generic records to specific names
+    c.execute("UPDATE expenses SET paid_by = 'Sandeep' WHERE paid_by = 'Partner 1'")
+    c.execute("UPDATE expenses SET paid_by = 'Harshal' WHERE paid_by = 'Partner 2'")
+    c.execute("UPDATE settlements SET received_by = 'Sandeep' WHERE received_by = 'Partner 1'")
+    c.execute("UPDATE settlements SET received_by = 'Harshal' WHERE received_by = 'Partner 2'")
+    c.execute("UPDATE withdrawals SET partner = 'Sandeep' WHERE partner = 'Partner 1'")
+    c.execute("UPDATE withdrawals SET partner = 'Harshal' WHERE partner = 'Partner 2'")
+
     conn.commit()
     conn.close()
 
@@ -103,10 +119,10 @@ def fetch_data(query, params=()):
 # ==========================================
 # ACCOUNTING LOGIC & CALCULATIONS
 # ==========================================
-def calculate_financials():
+def calculate_financials(partnership, p1_name, p2_name):
     """Calculates all master financials based on the accounting rules."""
     # 1. Slot Calculations
-    batches_df = fetch_data("SELECT * FROM batches")
+    batches_df = fetch_data("SELECT * FROM batches WHERE partnership=?", (partnership,))
     if not batches_df.empty:
         batches_df['active_slots'] = batches_df['total_slots'] - batches_df['cancelled_slots']
         batches_df['p1_cost'] = batches_df['active_slots'] * batches_df['p1_rate']
@@ -121,10 +137,10 @@ def calculate_financials():
         total_p1_slot_cost = total_p2_slot_cost = total_expected_settlement = total_active_slots = 0.0
 
     # 2. General Expenses
-    expenses_df = fetch_data("SELECT * FROM expenses")
+    expenses_df = fetch_data("SELECT * FROM expenses WHERE partnership=?", (partnership,))
     if not expenses_df.empty:
-        p1_expenses = expenses_df[expenses_df['paid_by'] == 'Partner 1']['amount'].sum()
-        p2_expenses = expenses_df[expenses_df['paid_by'] == 'Partner 2']['amount'].sum()
+        p1_expenses = expenses_df[expenses_df['paid_by'] == p1_name]['amount'].sum()
+        p2_expenses = expenses_df[expenses_df['paid_by'] == p2_name]['amount'].sum()
     else:
         p1_expenses = p2_expenses = 0.0
 
@@ -134,19 +150,19 @@ def calculate_financials():
     total_business_expenses = total_paid_by_p1 + total_paid_by_p2
 
     # 3. Settlements Received
-    settlements_df = fetch_data("SELECT * FROM settlements")
+    settlements_df = fetch_data("SELECT * FROM settlements WHERE partnership=?", (partnership,))
     if not settlements_df.empty:
-        received_by_p1 = settlements_df[settlements_df['received_by'] == 'Partner 1']['amount'].sum()
-        received_by_p2 = settlements_df[settlements_df['received_by'] == 'Partner 2']['amount'].sum()
+        received_by_p1 = settlements_df[settlements_df['received_by'] == p1_name]['amount'].sum()
+        received_by_p2 = settlements_df[settlements_df['received_by'] == p2_name]['amount'].sum()
         total_received_settlement = settlements_df['amount'].sum()
     else:
         received_by_p1 = received_by_p2 = total_received_settlement = 0.0
 
     # 4. Withdrawals
-    withdrawals_df = fetch_data("SELECT * FROM withdrawals")
+    withdrawals_df = fetch_data("SELECT * FROM withdrawals WHERE partnership=?", (partnership,))
     if not withdrawals_df.empty:
-        withdrawn_p1 = withdrawals_df[withdrawals_df['partner'] == 'Partner 1']['amount'].sum()
-        withdrawn_p2 = withdrawals_df[withdrawals_df['partner'] == 'Partner 2']['amount'].sum()
+        withdrawn_p1 = withdrawals_df[withdrawals_df['partner'] == p1_name]['amount'].sum()
+        withdrawn_p2 = withdrawals_df[withdrawals_df['partner'] == p2_name]['amount'].sum()
     else:
         withdrawn_p1 = withdrawn_p2 = 0.0
 
@@ -156,9 +172,8 @@ def calculate_financials():
     pending_settlement = total_expected_settlement - total_received_settlement
     
     # Partner Shares (50:50 default)
-    partners_df = fetch_data("SELECT * FROM partners")
-    p1_share_pct = partners_df[partners_df['name'] == 'Partner 1']['profit_share'].values[0] / 100.0
-    p2_share_pct = partners_df[partners_df['name'] == 'Partner 2']['profit_share'].values[0] / 100.0
+    p1_share_pct = 0.50
+    p2_share_pct = 0.50
 
     p1_profit_share = realized_net_profit * p1_share_pct
     p2_profit_share = realized_net_profit * p2_share_pct
@@ -189,8 +204,8 @@ def calculate_financials():
 # ==========================================
 # UI COMPONENTS (PAGES)
 # ==========================================
-def render_dashboard(data):
-    st.title("📊 Business Dashboard")
+def render_dashboard(data, partnership, p1_name, p2_name):
+    st.title(f"📊 Dashboard: {partnership}")
     st.markdown("Overview of the Partnership's Financial Health")
 
     # Top Metrics
@@ -202,19 +217,32 @@ def render_dashboard(data):
 
     col5, col6, col7, col8 = st.columns(4)
     col5.metric("Total Expenses", format_currency(data['business_expenses']))
-    col6.metric("Realized Net Profit", format_currency(data['realized_net_profit']))
+    col6.metric(f"Net Profit ({partnership})", format_currency(data['realized_net_profit']))
     
     # Formatted balances indicating who owes who
     p1_bal_str = format_currency(abs(data['p1_balance']))
-    p1_bal_label = "Business Owes P1" if data['p1_balance'] >= 0 else "P1 Owes Business"
+    p1_bal_label = f"Business Owes {p1_name} (Take)" if data['p1_balance'] >= 0 else f"{p1_name} Owes Business (Give)"
     col7.metric(p1_bal_label, p1_bal_str, delta=data['p1_balance'], delta_color="normal")
     
     p2_bal_str = format_currency(abs(data['p2_balance']))
-    p2_bal_label = "Business Owes P2" if data['p2_balance'] >= 0 else "P2 Owes Business"
+    p2_bal_label = f"Business Owes {p2_name} (Take)" if data['p2_balance'] >= 0 else f"{p2_name} Owes Business (Give)"
     col8.metric(p2_bal_label, p2_bal_str, delta=data['p2_balance'], delta_color="normal")
 
     st.markdown("---")
     
+    # Clear settlement instructions
+    st.info(f"💡 **How to Settle Accounts:** If `{p1_name}` and `{p2_name}` want to clear all balances right now (distribute the cash held):")
+    if data['p1_balance'] > 0 and data['p2_balance'] < 0:
+        st.success(f"💸 **{p2_name}** needs to pay **{p1_name}** the amount of **{format_currency(abs(data['p2_balance']))}**")
+    elif data['p2_balance'] > 0 and data['p1_balance'] < 0:
+        st.success(f"💸 **{p1_name}** needs to pay **{p2_name}** the amount of **{format_currency(abs(data['p1_balance']))}**")
+    elif data['p1_balance'] == 0 and data['p2_balance'] == 0:
+        st.success("✅ All accounts are perfectly settled. Nobody owes anyone.")
+    else:
+        st.warning("⚠️ Both partners are owed money by the business. You need to wait for pending settlements to arrive to pay out profits.")
+
+    st.markdown("---")
+
     # Charts
     st.subheader("📈 Financial Visualizations")
     chart_col1, chart_col2 = st.columns(2)
@@ -232,14 +260,14 @@ def render_dashboard(data):
     with chart_col2:
         # Partner Contributions Bar
         fig2 = go.Figure(data=[
-            go.Bar(name='Contributions (Expenses)', x=['Partner 1', 'Partner 2'], y=[data['p1_contribution'], data['p2_contribution']], marker_color='#3498db'),
-            go.Bar(name='Profit Share', x=['Partner 1', 'Partner 2'], y=[data['p1_profit_share'], data['p2_profit_share']], marker_color='#9b59b6')
+            go.Bar(name='Contributions (Expenses)', x=[p1_name, p2_name], y=[data['p1_contribution'], data['p2_contribution']], marker_color='#3498db'),
+            go.Bar(name='Profit Share', x=[p1_name, p2_name], y=[data['p1_profit_share'], data['p2_profit_share']], marker_color='#9b59b6')
         ])
         fig2.update_layout(barmode='group', title="Partner Financial Breakdown")
         st.plotly_chart(fig2, use_container_width=True)
 
-def render_slots_management():
-    st.title("🎰 Daily Slot Management")
+def render_slots_management(partnership, p1_name, p2_name):
+    st.title(f"🎰 Slot Management ({partnership})")
     
     tab1, tab2 = st.tabs(["Add New Slots", "Manage / Cancel Slots"])
     
@@ -252,22 +280,22 @@ def render_slots_management():
                 total_slots = st.number_input("Number of Slots", min_value=1, step=1, value=50)
                 notes = st.text_area("Notes / Message", placeholder="e.g., Slots purchased for today's work.")
             with col2:
-                p1_rate = st.number_input("P1 Purchase Rate (₹)", value=15.0)
-                p2_rate = st.number_input("P2 Payment Rate (₹)", value=124.0)
+                p1_rate = st.number_input(f"{p1_name} Purchase Rate (₹)", value=15.0)
+                p2_rate = st.number_input(f"{p2_name} Payment Rate (₹)", value=124.0)
                 settlement_rate = st.number_input("Expected Settlement Rate (₹)", value=200.0)
             
             submitted = st.form_submit_button("Record Batch")
             if submitted:
                 execute_query('''
-                    INSERT INTO batches (work_date, total_slots, p1_rate, p2_rate, settlement_rate, notes, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (work_date.strftime("%Y-%m-%d"), total_slots, p1_rate, p2_rate, settlement_rate, notes, datetime.now().isoformat()))
+                    INSERT INTO batches (work_date, total_slots, p1_rate, p2_rate, settlement_rate, notes, created_at, partnership)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (work_date.strftime("%Y-%m-%d"), total_slots, p1_rate, p2_rate, settlement_rate, notes, datetime.now().isoformat(), partnership))
                 st.success("Batch recorded successfully!")
                 st.rerun()
                 
     with tab2:
         st.subheader("Existing Batches")
-        batches_df = fetch_data("SELECT * FROM batches ORDER BY work_date DESC")
+        batches_df = fetch_data("SELECT * FROM batches WHERE partnership=? ORDER BY work_date DESC", (partnership,))
         if not batches_df.empty:
             batches_df['Active Slots'] = batches_df['total_slots'] - batches_df['cancelled_slots']
             batches_df['Expected ($)'] = batches_df['Active Slots'] * batches_df['settlement_rate']
@@ -301,8 +329,8 @@ def render_slots_management():
         else:
             st.info("No slot batches found. Add one in the other tab.")
 
-def render_expenses():
-    st.title("💸 Daily Expense Management")
+def render_expenses(partnership, p1_name, p2_name):
+    st.title(f"💸 Expense Management ({partnership})")
     
     tab1, tab2 = st.tabs(["Add Expense", "Expense History"])
     
@@ -315,7 +343,7 @@ def render_expenses():
                 exp_date = st.date_input("Expense Date", date.today())
                 name = st.text_input("Expense Name")
                 category = st.selectbox("Category", categories)
-                paid_by = st.radio("Paid By", ["Partner 1", "Partner 2"])
+                paid_by = st.radio("Paid By (Select Partner)", [p1_name, p2_name])
             with col2:
                 amount = st.number_input("Amount (₹)", min_value=0.0, step=10.0)
                 ref_number = st.text_input("Reference Number (Optional)")
@@ -323,21 +351,21 @@ def render_expenses():
                 
             if st.form_submit_button("Log Expense"):
                 execute_query('''
-                    INSERT INTO expenses (expense_date, name, category, amount, paid_by, notes, ref_number, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (exp_date.strftime("%Y-%m-%d"), name, category, amount, paid_by, notes, ref_number, datetime.now().isoformat()))
+                    INSERT INTO expenses (expense_date, name, category, amount, paid_by, notes, ref_number, created_at, partnership)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (exp_date.strftime("%Y-%m-%d"), name, category, amount, paid_by, notes, ref_number, datetime.now().isoformat(), partnership))
                 st.success("Expense logged successfully!")
                 st.rerun()
                 
     with tab2:
-        df_exp = fetch_data("SELECT expense_date, name, category, amount, paid_by, notes FROM expenses ORDER BY expense_date DESC")
+        df_exp = fetch_data("SELECT expense_date, name, category, amount, paid_by, notes FROM expenses WHERE partnership=? ORDER BY expense_date DESC", (partnership,))
         if not df_exp.empty:
             st.dataframe(df_exp, use_container_width=True, hide_index=True)
         else:
             st.info("No expenses logged yet.")
 
-def render_settlements():
-    st.title("🏦 Settlement Management")
+def render_settlements(partnership, p1_name, p2_name):
+    st.title(f"🏦 Settlement Management ({partnership})")
     
     tab1, tab2 = st.tabs(["Record Settlement", "Settlement History"])
     
@@ -348,12 +376,12 @@ def render_settlements():
             with col1:
                 rec_date = st.date_input("Actual Received Date", date.today())
                 amount = st.number_input("Amount Received (₹)", min_value=0.0, step=100.0)
-                received_by = st.radio("Received In Account Of", ["Partner 2", "Partner 1"], index=0) # P2 default per rules
+                received_by = st.radio("Received In Account Of", [p2_name, p1_name], index=0) 
             with col2:
                 bank_ref = st.text_input("Bank Transaction Reference")
                 
                 # Option to link batch
-                batches = fetch_data("SELECT id, work_date, total_slots FROM batches")
+                batches = fetch_data("SELECT id, work_date, total_slots FROM batches WHERE partnership=?", (partnership,))
                 batch_options = {"None (Unallocated)": None}
                 for _, r in batches.iterrows():
                     batch_options[f"Batch {r['id']} ({r['work_date']}) - {r['total_slots']} slots"] = r['id']
@@ -365,21 +393,21 @@ def render_settlements():
                 
             if st.form_submit_button("Record Settlement"):
                 execute_query('''
-                    INSERT INTO settlements (received_date, amount, received_by, bank_ref, batch_id, notes, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (rec_date.strftime("%Y-%m-%d"), amount, received_by, bank_ref, batch_id, notes, datetime.now().isoformat()))
+                    INSERT INTO settlements (received_date, amount, received_by, bank_ref, batch_id, notes, created_at, partnership)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (rec_date.strftime("%Y-%m-%d"), amount, received_by, bank_ref, batch_id, notes, datetime.now().isoformat(), partnership))
                 st.success("Settlement recorded successfully!")
                 st.rerun()
                 
     with tab2:
-        df_settle = fetch_data("SELECT received_date, amount, received_by, bank_ref, batch_id, notes FROM settlements ORDER BY received_date DESC")
+        df_settle = fetch_data("SELECT received_date, amount, received_by, bank_ref, batch_id, notes FROM settlements WHERE partnership=? ORDER BY received_date DESC", (partnership,))
         if not df_settle.empty:
             st.dataframe(df_settle, use_container_width=True, hide_index=True)
         else:
             st.info("No settlements recorded yet.")
 
-def render_partner_balance(data):
-    st.title("⚖️ Partner Accounting & Profit Sharing")
+def render_partner_balance(data, partnership, p1_name, p2_name):
+    st.title(f"⚖️ Partner Accounting & Profit Sharing ({partnership})")
     
     st.markdown("""
     **Calculation Formula:**
@@ -389,33 +417,33 @@ def render_partner_balance(data):
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("Partner 1 Account")
+        st.subheader(f"{p1_name}'s Account")
         st.write(f"**Total Expenses Paid (Reimbursable):** {format_currency(data['p1_contribution'])}")
         st.write(f"**Profit Share Assigned:** {format_currency(data['p1_profit_share'])}")
         # settlements received by P1
-        p1_received = fetch_data("SELECT SUM(amount) as total FROM settlements WHERE received_by = 'Partner 1'")['total'].values[0]
+        p1_received = fetch_data("SELECT SUM(amount) as total FROM settlements WHERE received_by = ? AND partnership=?", (p1_name, partnership))['total'].values[0]
         p1_received = p1_received if pd.notna(p1_received) else 0.0
         st.write(f"**Settlements Kept:** {format_currency(p1_received)}")
         st.markdown("---")
         st.markdown(f"### Current Balance: {format_currency(data['p1_balance'])}")
         if data['p1_balance'] > 0:
-            st.success("🟢 Business owes Partner 1")
+            st.success(f"🟢 Business owes {p1_name} (To Take)")
         else:
-            st.error("🔴 Partner 1 owes the Business")
+            st.error(f"🔴 {p1_name} owes the Business (To Give)")
             
     with col2:
-        st.subheader("Partner 2 Account")
+        st.subheader(f"{p2_name}'s Account")
         st.write(f"**Total Expenses Paid (Reimbursable):** {format_currency(data['p2_contribution'])}")
         st.write(f"**Profit Share Assigned:** {format_currency(data['p2_profit_share'])}")
-        p2_received = fetch_data("SELECT SUM(amount) as total FROM settlements WHERE received_by = 'Partner 2'")['total'].values[0]
+        p2_received = fetch_data("SELECT SUM(amount) as total FROM settlements WHERE received_by = ? AND partnership=?", (p2_name, partnership))['total'].values[0]
         p2_received = p2_received if pd.notna(p2_received) else 0.0
         st.write(f"**Settlements Kept:** {format_currency(p2_received)}")
         st.markdown("---")
         st.markdown(f"### Current Balance: {format_currency(data['p2_balance'])}")
         if data['p2_balance'] > 0:
-            st.success("🟢 Business owes Partner 2")
+            st.success(f"🟢 Business owes {p2_name} (To Take)")
         else:
-            st.error("🔴 Partner 2 owes the Business")
+            st.error(f"🔴 {p2_name} owes the Business (To Give)")
 
     st.markdown("---")
     st.subheader("Record Partner Withdrawal / Payment")
@@ -426,27 +454,27 @@ def render_partner_balance(data):
         with c1:
             w_date = st.date_input("Date", date.today())
         with c2:
-            w_partner = st.selectbox("Partner Withdrawing", ["Partner 1", "Partner 2"])
+            w_partner = st.selectbox("Partner Withdrawing", [p1_name, p2_name])
         with c3:
             w_amount = st.number_input("Amount (₹)", min_value=0.0, step=100.0)
         
         w_notes = st.text_input("Notes (e.g., Routine profit withdrawal)")
         
         if st.form_submit_button("Record Withdrawal"):
-            execute_query("INSERT INTO withdrawals (withdrawal_date, partner, amount, notes, created_at) VALUES (?, ?, ?, ?, ?)",
-                          (w_date.strftime("%Y-%m-%d"), w_partner, w_amount, w_notes, datetime.now().isoformat()))
+            execute_query("INSERT INTO withdrawals (withdrawal_date, partner, amount, notes, created_at, partnership) VALUES (?, ?, ?, ?, ?, ?)",
+                          (w_date.strftime("%Y-%m-%d"), w_partner, w_amount, w_notes, datetime.now().isoformat(), partnership))
             st.success("Withdrawal recorded successfully!")
             st.rerun()
 
-def render_transaction_history():
-    st.title("📜 Transaction Master Ledger")
+def render_transaction_history(partnership):
+    st.title(f"📜 Transaction Master Ledger ({partnership})")
     
     # Combine datasets for a master ledger
     queries = [
-        "SELECT created_at as timestamp, 'Batch Record' as type, total_slots || ' slots' as description, 0 as amount, 'System' as partner, notes FROM batches",
-        "SELECT created_at as timestamp, 'Expense' as type, category || ': ' || name as description, amount, paid_by as partner, notes FROM expenses",
-        "SELECT created_at as timestamp, 'Settlement' as type, 'Bank Ref: ' || ifnull(bank_ref, 'N/A') as description, amount, received_by as partner, notes FROM settlements",
-        "SELECT created_at as timestamp, 'Withdrawal' as type, 'Balance Settlement' as description, amount, partner, notes FROM withdrawals"
+        f"SELECT created_at as timestamp, 'Batch Record' as type, total_slots || ' slots' as description, 0 as amount, 'System' as partner, notes FROM batches WHERE partnership='{partnership}'",
+        f"SELECT created_at as timestamp, 'Expense' as type, category || ': ' || name as description, amount, paid_by as partner, notes FROM expenses WHERE partnership='{partnership}'",
+        f"SELECT created_at as timestamp, 'Settlement' as type, 'Bank Ref: ' || ifnull(bank_ref, 'N/A') as description, amount, received_by as partner, notes FROM settlements WHERE partnership='{partnership}'",
+        f"SELECT created_at as timestamp, 'Withdrawal' as type, 'Balance Settlement' as description, amount, partner, notes FROM withdrawals WHERE partnership='{partnership}'"
     ]
     
     ledger_df = pd.DataFrame()
@@ -513,30 +541,36 @@ def render_database_management():
 def main():
     # Sidebar Navigation
     st.sidebar.title("🏢 Partnership App")
+    
+    # --- NEW: Select Partnership ---
+    partnership = st.sidebar.selectbox("🤝 Select Active Partnership", ["Sandeep & Harshal", "Sandeep & Vishnu"])
+    p1_name = "Sandeep"
+    p2_name = "Harshal" if "Harshal" in partnership else "Vishnu"
+    
     st.sidebar.markdown("---")
     
     menu = ["Dashboard", "Slot Management", "Expenses", "Settlements", "Partner Balance", "Transaction History", "Data Backup (Important)"]
     choice = st.sidebar.radio("Navigation", menu)
     
     st.sidebar.markdown("---")
-    st.sidebar.info("Two-Partner Business Model (50:50). Calculates real-time P&L and partner balances.")
+    st.sidebar.info("Calculates real-time P&L and exact amounts partners need to take or give.")
     
     # Pre-calculate financials for global use
-    financial_data = calculate_financials()
+    financial_data = calculate_financials(partnership, p1_name, p2_name)
 
     # Routing
     if choice == "Dashboard":
-        render_dashboard(financial_data)
+        render_dashboard(financial_data, partnership, p1_name, p2_name)
     elif choice == "Slot Management":
-        render_slots_management()
+        render_slots_management(partnership, p1_name, p2_name)
     elif choice == "Expenses":
-        render_expenses()
+        render_expenses(partnership, p1_name, p2_name)
     elif choice == "Settlements":
-        render_settlements()
+        render_settlements(partnership, p1_name, p2_name)
     elif choice == "Partner Balance":
-        render_partner_balance(financial_data)
+        render_partner_balance(financial_data, partnership, p1_name, p2_name)
     elif choice == "Transaction History":
-        render_transaction_history()
+        render_transaction_history(partnership)
     elif choice == "Data Backup (Important)":
         render_database_management()
 
