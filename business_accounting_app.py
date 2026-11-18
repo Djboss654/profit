@@ -195,6 +195,10 @@ def calculate_financials(partnership, p1_name, p2_name):
         'p2_balance': p2_balance,
         'p1_profit_share': p1_profit_share,
         'p2_profit_share': p2_profit_share,
+        'received_by_p1': received_by_p1,
+        'received_by_p2': received_by_p2,
+        'withdrawn_p1': withdrawn_p1,
+        'withdrawn_p2': withdrawn_p2,
         'batches_df': batches_df,
         'expenses_df': expenses_df,
         'settlements_df': settlements_df
@@ -409,41 +413,56 @@ def render_settlements(partnership, p1_name, p2_name):
 def render_partner_balance(data, partnership, p1_name, p2_name):
     st.title(f"⚖️ Partner Accounting & Profit Sharing ({partnership})")
     
-    st.markdown("""
-    **Calculation Formula:**
-    `Partner Entitlement = Reimbursable Expenses Paid + Agreed Share of Net Profit − Settlements Kept − Withdrawals Made`
+    st.markdown(f"""
+    **How the Settlement is Divided:**
+    1. **Return Investments:** First, we pay back {p1_name} and {p2_name} exactly what they spent from their pockets.
+    2. **Divide Profit:** Any settlement money left over after returning the investments is profit, which is divided 50-50.
     """)
+    
+    total_received = data['received_settlement']
+    total_invested = data['business_expenses']
+    profit_or_loss = data['realized_net_profit']
+
+    st.info(f"**Overall Business Status:** Total Settlement Received: **{format_currency(total_received)}** | Total Investments Made: **{format_currency(total_invested)}**")
+
+    if profit_or_loss < 0:
+        st.warning(f"⚠️ **Pending Settlements Needed:** The business has currently invested more than it has received back in settlements. (Shortfall: {format_currency(abs(profit_or_loss))}). The balances below show who has paid more out of pocket so far.")
+    else:
+        st.success(f"🎉 **Profitable!** The business has recovered all investments and generated a profit of {format_currency(profit_or_loss)} to be split 50-50.")
+
+    st.markdown("---")
     
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader(f"{p1_name}'s Account")
-        st.write(f"**Total Expenses Paid (Reimbursable):** {format_currency(data['p1_contribution'])}")
-        st.write(f"**Profit Share Assigned:** {format_currency(data['p1_profit_share'])}")
-        # settlements received by P1
-        p1_received = fetch_data("SELECT SUM(amount) as total FROM settlements WHERE received_by = ? AND partnership=?", (p1_name, partnership))['total'].values[0]
-        p1_received = p1_received if pd.notna(p1_received) else 0.0
-        st.write(f"**Settlements Kept:** {format_currency(p1_received)}")
+        st.write(f"**1. Investment to Return:** {format_currency(data['p1_contribution'])}")
+        st.write(f"**2. 50% Profit Share:** {format_currency(data['p1_profit_share'])}")
+        st.write(f"*(Less) Settlements Kept:* {format_currency(data['received_by_p1'])}")
+        st.write(f"*(Less) Withdrawals:* {format_currency(data['withdrawn_p1'])}")
         st.markdown("---")
-        st.markdown(f"### Current Balance: {format_currency(data['p1_balance'])}")
+        st.markdown(f"### Final Balance: {format_currency(data['p1_balance'])}")
         if data['p1_balance'] > 0:
-            st.success(f"🟢 Business owes {p1_name} (To Take)")
+            st.success(f"🟢 {p1_name} needs to take {format_currency(data['p1_balance'])}")
+        elif data['p1_balance'] < 0:
+            st.error(f"🔴 {p1_name} needs to give {format_currency(abs(data['p1_balance']))}")
         else:
-            st.error(f"🔴 {p1_name} owes the Business (To Give)")
+            st.info("Settled")
             
     with col2:
         st.subheader(f"{p2_name}'s Account")
-        st.write(f"**Total Expenses Paid (Reimbursable):** {format_currency(data['p2_contribution'])}")
-        st.write(f"**Profit Share Assigned:** {format_currency(data['p2_profit_share'])}")
-        p2_received = fetch_data("SELECT SUM(amount) as total FROM settlements WHERE received_by = ? AND partnership=?", (p2_name, partnership))['total'].values[0]
-        p2_received = p2_received if pd.notna(p2_received) else 0.0
-        st.write(f"**Settlements Kept:** {format_currency(p2_received)}")
+        st.write(f"**1. Investment to Return:** {format_currency(data['p2_contribution'])}")
+        st.write(f"**2. 50% Profit Share:** {format_currency(data['p2_profit_share'])}")
+        st.write(f"*(Less) Settlements Kept:* {format_currency(data['received_by_p2'])}")
+        st.write(f"*(Less) Withdrawals:* {format_currency(data['withdrawn_p2'])}")
         st.markdown("---")
-        st.markdown(f"### Current Balance: {format_currency(data['p2_balance'])}")
+        st.markdown(f"### Final Balance: {format_currency(data['p2_balance'])}")
         if data['p2_balance'] > 0:
-            st.success(f"🟢 Business owes {p2_name} (To Take)")
+            st.success(f"🟢 {p2_name} needs to take {format_currency(data['p2_balance'])}")
+        elif data['p2_balance'] < 0:
+            st.error(f"🔴 {p2_name} needs to give {format_currency(abs(data['p2_balance']))}")
         else:
-            st.error(f"🔴 {p2_name} owes the Business (To Give)")
+            st.info("Settled")
 
     st.markdown("---")
     st.subheader("Record Partner Withdrawal / Payment")
