@@ -1,16 +1,6 @@
 {
   "Sandeep & Harshal": {
-    "orders": [
-      {
-        "id": "7afa34c9",
-        "date": "2026-11-11",
-        "partner": "Harshal",
-        "orders_count": 89,
-        "amount": 101.0,
-        "notes": "orders",
-        "created_at": "2026-11-19 16:00"
-      }
-    ],
+    "orders": [],
     "expenses": [
       {
         "id": "949d16b0",
