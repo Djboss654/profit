@@ -32,7 +32,26 @@
         "created_at": "2026-11-26 04:06"
       }
     ],
-    "settlements": [],
+    "settlements": [
+      {
+        "id": "96e06d6e",
+        "date": "2026-11-25",
+        "work_id": "",
+        "work_date": "Custom / Unknown",
+        "orders_settled": 106,
+        "settlement_amount": 21109.0,
+        "order_price": 101.0,
+        "number_rate": 10.0,
+        "partner_invested": 10706.0,
+        "sandeep_invested": 1060.0,
+        "net_profit": 9343.0,
+        "profit_each": 4671.5,
+        "partner_total_share": 15377.5,
+        "sandeep_total_share": 5731.5,
+        "notes": "",
+        "created_at": "2026-11-26 04:09"
+      }
+    ],
     "received_from_partner": []
   }
 }
