@@ -1,24 +1,28 @@
 """
 Simple Two-Partner Business Hisab App (Sandeep & Harshal / Sandeep & Vishnu)
 ---------------------------------------------------------------------------
-Key Rules Implemented:
+Exact Workflow:
 1. Two completely separate partnerships:
    - Sandeep & Harshal
    - Sandeep & Vishnu
-2. Order Payments (by Harshal / Vishnu) = Business Investment:
-   - Tracks total number of orders placed and total amount paid.
-   - At every settlement, you manually decide how much invested amount to pay back.
-3. Number Purchase (by Sandeep) = Business Expense:
-   - Paid back to Sandeep from settlement before dividing profit.
-4. Settlements:
-   - Tracks number of orders settled, total settlement amount received,
-     who received the money in their bank, how much investment is returned
-     to the partner from that settlement, and how much expense is paid to Sandeep.
-5. Profit Split:
-   - After Number Purchase expense and Order Investment, remaining profit is split 50-50.
-6. Persistence:
-   - Automatically saves and loads `accounting_data.json` from GitHub via Streamlit Secrets,
-     with automatic fallback to a local JSON file if secrets are not configured.
+2. Daily Work Entry (per date):
+   - Number of Orders
+   - Order Price per order (paid by Partner: Harshal / Vishnu)
+   - Number Rate per order (paid by Sandeep)
+3. Settlement Entry (always received in Partner's bank):
+   - Settlement Date, Total Settlement Amount, Number of Orders Settled
+   - Links to a Work Date (auto-fills that day's Order Price & Number Rate, or custom)
+   - Automatically calculates:
+       * Partner's Invested Amount for those orders (Order Price × Orders Settled)
+       * Sandeep's Number Amount for those orders (Number Rate × Orders Settled)
+       * Remaining Profit = Settlement Amount − Partner Invested − Sandeep Number Cost
+       * 50-50 Profit Share = Remaining Profit / 2
+       * Partner's Share (keeps in bank) = Partner Invested + 50% Profit
+       * Sandeep's Share (to take from Partner) = Sandeep Number Cost + 50% Profit
+4. Payment Received from Partner:
+   - Record cash/UPI received by Sandeep from Harshal/Vishnu to track exact pending balance.
+5. GitHub Auto-Save:
+   - Saves and loads `accounting_data.json` on GitHub via Streamlit Secrets (with local fallback).
 """
 
 import base64
@@ -32,7 +36,7 @@ import requests
 import streamlit as st
 
 # ============================================================================
-# 1. PAGE CONFIG & CLEAN STYLING
+# 1. PAGE CONFIG & STYLING
 # ============================================================================
 st.set_page_config(
     page_title="Simple Partnership Hisab",
@@ -50,19 +54,19 @@ st.markdown(
         }
         .hisab-card {
             background-color: var(--secondary-background-color);
-            border: 1px solid rgba(128, 128, 128, 0.2);
+            border: 1px solid rgba(128, 128, 128, 0.22);
             border-radius: 12px;
             padding: 16px 18px;
             margin-bottom: 12px;
         }
         .hisab-title {
-            font-size: 0.9rem;
+            font-size: 0.88rem;
             opacity: 0.78;
             margin-bottom: 4px;
             font-weight: 500;
         }
         .hisab-value {
-            font-size: 1.55rem;
+            font-size: 1.5rem;
             font-weight: 700;
             margin: 0;
         }
@@ -71,26 +75,19 @@ st.markdown(
             opacity: 0.75;
             margin-top: 4px;
         }
-        .step-box {
-            border-left: 4px solid #2e7d32;
-            background-color: var(--secondary-background-color);
-            padding: 14px 16px;
-            border-radius: 8px;
-            margin-bottom: 12px;
+        .take-banner {
+            background: linear-gradient(135deg, rgba(46, 125, 50, 0.16), rgba(46, 125, 50, 0.05));
+            border-left: 5px solid #2e7d32;
+            border-radius: 10px;
+            padding: 18px 20px;
+            margin-bottom: 16px;
         }
-        .step-box-blue {
-            border-left: 4px solid #1565c0;
-            background-color: var(--secondary-background-color);
-            padding: 14px 16px;
-            border-radius: 8px;
-            margin-bottom: 12px;
-        }
-        .step-box-amber {
-            border-left: 4px solid #ef6c00;
-            background-color: var(--secondary-background-color);
-            padding: 14px 16px;
-            border-radius: 8px;
-            margin-bottom: 12px;
+        .partner-banner {
+            background: linear-gradient(135deg, rgba(21, 101, 192, 0.14), rgba(21, 101, 192, 0.04));
+            border-left: 5px solid #1565c0;
+            border-radius: 10px;
+            padding: 18px 20px;
+            margin-bottom: 16px;
         }
     </style>
     """,
@@ -98,7 +95,7 @@ st.markdown(
 )
 
 # ============================================================================
-# 2. CONSTANTS & HELPER FUNCTIONS
+# 2. CONSTANTS & HELPERS
 # ============================================================================
 PARTNERSHIPS = {
     "Sandeep & Harshal": "Harshal",
@@ -109,7 +106,7 @@ GITHUB_DATA_PATH = "accounting_data.json"
 
 
 def format_inr(amount: float) -> str:
-    """Format a number in Indian Rupee style (e.g., ₹ 1,25,000.00)."""
+    """Format a number in Indian Rupee format (e.g., ₹ 1,25,000.00)."""
     try:
         val = float(amount)
     except (TypeError, ValueError):
@@ -133,17 +130,16 @@ def format_inr(amount: float) -> str:
 
 
 def empty_partnership_data() -> dict:
-    """Return a clean empty structure for one partnership."""
+    """Return clean empty data structure for one partnership."""
     return {
-        "orders": [],        # Partner investment: orders placed & amount paid
-        "expenses": [],      # Sandeep's expense: number purchase
-        "settlements": [],   # Settlement received + decided investment/expense payouts
-        "payouts": [],       # Extra manual payouts (investment, expense, or profit)
+        "daily_work": [],            # Each date: orders_count, order_price, number_rate
+        "settlements": [],           # Each settlement: date, orders_settled, amount, rates & shares
+        "received_from_partner": [], # Money Partner actually paid to Sandeep
     }
 
 
 def default_root_data() -> dict:
-    """Return default root JSON structure containing both partnerships."""
+    """Return root JSON structure containing both partnerships."""
     return {
         "Sandeep & Harshal": empty_partnership_data(),
         "Sandeep & Vishnu": empty_partnership_data(),
@@ -151,27 +147,39 @@ def default_root_data() -> dict:
 
 
 def ensure_data_schema(raw: dict) -> dict:
-    """Guarantee both partnerships and all required lists exist (backward-compatible)."""
+    """Guarantee all required keys exist without crashing on older data files."""
     data = default_root_data()
     if not isinstance(raw, dict):
         return data
     for p_key in PARTNERSHIPS:
         if isinstance(raw.get(p_key), dict):
-            for section in ("orders", "expenses", "settlements", "payouts"):
+            for section in ("daily_work", "settlements", "received_from_partner"):
                 items = raw[p_key].get(section, [])
                 if isinstance(items, list):
                     data[p_key][section] = items
     return data
 
 
+def render_card(title: str, value: str, subtitle: str = ""):
+    """Render a clean KPI card."""
+    sub_html = f'<div class="hisab-sub">{subtitle}</div>' if subtitle else ""
+    st.markdown(
+        f"""
+        <div class="hisab-card">
+            <div class="hisab-title">{title}</div>
+            <div class="hisab-value">{value}</div>
+            {sub_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ============================================================================
 # 3. GITHUB & LOCAL STORAGE LAYER
 # ============================================================================
 def get_github_config() -> tuple:
-    """
-    Read GitHub credentials from Streamlit Secrets.
-    Supports full repo URLs (e.g., https://github.com/user/repo) or 'user/repo'.
-    """
+    """Read GitHub credentials from Streamlit Secrets."""
     try:
         token = st.secrets.get("GITHUB_TOKEN", "").strip()
         repo = st.secrets.get("GITHUB_REPO", "").strip()
@@ -188,7 +196,7 @@ def get_github_config() -> tuple:
 
 
 def github_headers(token: str) -> dict:
-    """Return auth headers compatible with both classic and fine-grained GitHub PATs."""
+    """Return GitHub API headers compatible with fine-grained and classic PATs."""
     return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
@@ -196,12 +204,10 @@ def github_headers(token: str) -> dict:
     }
 
 
-def load_data() -> tuple[dict, str, str]:
-    """
-    Load accounting data from GitHub if configured, otherwise from local JSON.
-    Returns: (data_dict, storage_mode_label, error_message)
-    """
+def load_data() -> tuple:
+    """Load data from GitHub if configured, otherwise fallback to local JSON."""
     token, repo, branch = get_github_config()
+    err = ""
     if token and repo:
         url = f"https://api.github.com/repos/{repo}/contents/{GITHUB_DATA_PATH}"
         try:
@@ -223,10 +229,7 @@ def load_data() -> tuple[dict, str, str]:
                 err = f"GitHub Load Error ({resp.status_code}): {resp.text[:160]}"
         except Exception as exc:
             err = f"GitHub Connection Error: {exc}"
-    else:
-        err = ""
 
-    # Fallback to local JSON file
     if os.path.exists(LOCAL_DATA_FILE):
         try:
             with open(LOCAL_DATA_FILE, "r", encoding="utf-8") as f:
@@ -236,12 +239,8 @@ def load_data() -> tuple[dict, str, str]:
     return default_root_data(), "Local File", err
 
 
-def save_data(data: dict) -> tuple[bool, str]:
-    """
-    Persist accounting data to GitHub (if configured) and always mirror locally.
-    Returns: (success, status_message)
-    """
-    # Always write local copy as fast fallback
+def save_data(data: dict) -> tuple:
+    """Save data to local JSON and push to GitHub if secrets are configured."""
     try:
         with open(LOCAL_DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -256,7 +255,6 @@ def save_data(data: dict) -> tuple[bool, str]:
     headers = github_headers(token)
 
     try:
-        # Fetch latest SHA to prevent conflict errors on concurrent updates
         sha = st.session_state.get("github_sha")
         check_resp = requests.get(url, headers=headers, params={"ref": branch}, timeout=10)
         if check_resp.status_code == 200:
@@ -283,152 +281,76 @@ def save_data(data: dict) -> tuple[bool, str]:
             st.session_state["storage_label"] = f"GitHub ({repo})"
             return True, "Saved to GitHub successfully!"
         if put_resp.status_code == 401:
-            return False, "GitHub Error 401: Token is invalid or expired. Generate a new token and update Streamlit Secrets."
+            return False, "GitHub Error 401: Invalid or expired token. Generate a new token and update Streamlit Secrets."
         if put_resp.status_code == 403:
-            return False, "GitHub Error 403: Permission denied. Set 'Contents' permission to 'Read and write' on your token."
+            return False, "GitHub Error 403: Permission denied. Ensure token has 'Contents: Read and write' permission."
         if put_resp.status_code == 404:
-            return False, f"GitHub Error 404: Repo '{repo}' or branch '{branch}' not found (or token lacks access to this repo)."
+            return False, f"GitHub Error 404: Repo '{repo}' or branch '{branch}' not found."
         return False, f"GitHub Save Error ({put_resp.status_code}): {put_resp.text[:180]}"
     except Exception as exc:
         return False, f"GitHub Save Exception: {exc}"
 
 
 # ============================================================================
-# 4. CORE HISAB CALCULATION ENGINE
+# 4. CORE CALCULATION ENGINE
 # ============================================================================
-def calculate_hisab(pdata: dict, partner_name: str) -> dict:
+def calculate_summary(pdata: dict) -> dict:
     """
-    Compute all clear, simple metrics for the active partnership.
-
-    Rules:
-    - Order Payments (Harshal / Vishnu) = Business Investment.
-    - Number Purchase (Sandeep) = Business Expense (paid back to Sandeep first).
-    - Settlements record:
-        * orders_settled
-        * amount (total settlement received)
-        * received_by (who got the bank transfer)
-        * investment_paid_to_partner (decided manually at each settlement)
-        * expense_paid_to_sandeep (number purchase amount paid back to Sandeep)
-    - Extra Manual Payouts can also pay back Investment, Expense, or Profit.
+    Calculate clear totals across all daily work, settlements, and payments received.
+    Remember: Settlement money ALWAYS arrives in the Partner's bank account.
     """
-    orders = pdata.get("orders", [])
-    expenses = pdata.get("expenses", [])
+    daily_work = pdata.get("daily_work", [])
     settlements = pdata.get("settlements", [])
-    payouts = pdata.get("payouts", [])
+    received = pdata.get("received_from_partner", [])
 
-    # 1. Orders & Partner Investment
-    total_orders_placed = sum(int(o.get("orders_count", 0)) for o in orders)
-    total_investment = sum(float(o.get("amount", 0.0)) for o in orders)
+    # Daily Work Totals
+    total_orders_placed = sum(int(w.get("orders_count", 0)) for w in daily_work)
+    total_partner_order_paid = sum(float(w.get("partner_total", 0.0)) for w in daily_work)
+    total_sandeep_number_paid = sum(float(w.get("sandeep_total", 0.0)) for w in daily_work)
 
-    # 2. Sandeep's Number Purchase Expense
-    total_numbers_bought = sum(int(e.get("count", 0)) for e in expenses)
-    total_number_expense = sum(float(e.get("amount", 0.0)) for e in expenses)
-
-    # 3. Settlements Received
+    # Settlement Totals
     total_orders_settled = sum(int(s.get("orders_settled", 0)) for s in settlements)
     pending_orders = max(0, total_orders_placed - total_orders_settled)
-    total_settlement = sum(float(s.get("amount", 0.0)) for s in settlements)
+    total_settlement_received = sum(float(s.get("settlement_amount", 0.0)) for s in settlements)
 
-    settlement_in_partner_bank = sum(
-        float(s.get("amount", 0.0))
-        for s in settlements
-        if s.get("received_by") == partner_name
-    )
-    settlement_in_sandeep_bank = sum(
-        float(s.get("amount", 0.0))
-        for s in settlements
-        if s.get("received_by") == "Sandeep"
-    )
+    # Breakdown from Settled Batches
+    settled_partner_investment = sum(float(s.get("partner_invested", 0.0)) for s in settlements)
+    settled_sandeep_number = sum(float(s.get("sandeep_invested", 0.0)) for s in settlements)
+    total_net_profit = sum(float(s.get("net_profit", 0.0)) for s in settlements)
+    total_profit_each = sum(float(s.get("profit_each", 0.0)) for s in settlements)
 
-    # 4. Investment Returned to Partner (from settlements + extra manual payouts)
-    inv_returned_in_settlements = sum(
-        float(s.get("investment_paid_to_partner", 0.0)) for s in settlements
-    )
-    inv_returned_manual = sum(
-        float(p.get("amount", 0.0))
-        for p in payouts
-        if p.get("payout_type") == "Investment Return to Partner"
-    )
-    total_investment_returned = inv_returned_in_settlements + inv_returned_manual
-    pending_investment = total_investment - total_investment_returned
+    # Shares (Settlements arrive in Partner's bank)
+    total_partner_share = sum(float(s.get("partner_total_share", 0.0)) for s in settlements)
+    total_sandeep_share = sum(float(s.get("sandeep_total_share", 0.0)) for s in settlements)
 
-    # 5. Number Purchase Expense Paid to Sandeep (from settlements + extra manual payouts)
-    exp_paid_in_settlements = sum(
-        float(s.get("expense_paid_to_sandeep", 0.0)) for s in settlements
-    )
-    exp_paid_manual = sum(
-        float(p.get("amount", 0.0))
-        for p in payouts
-        if p.get("payout_type") == "Number Expense to Sandeep"
-    )
-    total_expense_paid_to_sandeep = exp_paid_in_settlements + exp_paid_manual
-    pending_expense_to_sandeep = total_number_expense - total_expense_paid_to_sandeep
+    # Money already transferred from Partner to Sandeep
+    already_received_by_sandeep = sum(float(r.get("amount", 0.0)) for r in received)
+    pending_to_take_from_partner = total_sandeep_share - already_received_by_sandeep
 
-    # 6. Profit Calculation
-    # A) Cash-Pool Distributable Profit (based on what you actually decided to return from settlements):
-    #    Total Settlement - Investment Returned - Number Expense Paid to Sandeep
-    cash_left_for_profit = (
-        total_settlement - total_investment_returned - total_expense_paid_to_sandeep
-    )
-    cash_profit_each = cash_left_for_profit / 2.0
-
-    # B) True Overall Business Profit (after ALL investments + ALL number expenses):
-    true_net_profit = total_settlement - total_investment - total_number_expense
-    true_profit_each = true_net_profit / 2.0
-
-    # 7. Profit Payouts already taken
-    sandeep_profit_taken = sum(
-        float(p.get("amount", 0.0))
-        for p in payouts
-        if p.get("payout_type") == "Profit Share Paid" and p.get("partner") == "Sandeep"
-    )
-    partner_profit_taken = sum(
-        float(p.get("amount", 0.0))
-        for p in payouts
-        if p.get("payout_type") == "Profit Share Paid" and p.get("partner") == partner_name
-    )
-
-    sandeep_pending_profit = cash_profit_each - sandeep_profit_taken
-    partner_pending_profit = cash_profit_each - partner_profit_taken
+    # Track settled orders per work_id so dropdown shows remaining unsettled orders
+    settled_by_work_id = {}
+    for s in settlements:
+        wid = s.get("work_id")
+        if wid:
+            settled_by_work_id[wid] = settled_by_work_id.get(wid, 0) + int(s.get("orders_settled", 0))
 
     return {
         "total_orders_placed": total_orders_placed,
         "total_orders_settled": total_orders_settled,
         "pending_orders": pending_orders,
-        "total_investment": total_investment,
-        "total_investment_returned": total_investment_returned,
-        "pending_investment": pending_investment,
-        "total_numbers_bought": total_numbers_bought,
-        "total_number_expense": total_number_expense,
-        "total_expense_paid_to_sandeep": total_expense_paid_to_sandeep,
-        "pending_expense_to_sandeep": pending_expense_to_sandeep,
-        "total_settlement": total_settlement,
-        "settlement_in_partner_bank": settlement_in_partner_bank,
-        "settlement_in_sandeep_bank": settlement_in_sandeep_bank,
-        "cash_left_for_profit": cash_left_for_profit,
-        "cash_profit_each": cash_profit_each,
-        "true_net_profit": true_net_profit,
-        "true_profit_each": true_profit_each,
-        "sandeep_profit_taken": sandeep_profit_taken,
-        "partner_profit_taken": partner_profit_taken,
-        "sandeep_pending_profit": sandeep_pending_profit,
-        "partner_pending_profit": partner_pending_profit,
+        "total_partner_order_paid": total_partner_order_paid,
+        "total_sandeep_number_paid": total_sandeep_number_paid,
+        "total_settlement_received": total_settlement_received,
+        "settled_partner_investment": settled_partner_investment,
+        "settled_sandeep_number": settled_sandeep_number,
+        "total_net_profit": total_net_profit,
+        "total_profit_each": total_profit_each,
+        "total_partner_share": total_partner_share,
+        "total_sandeep_share": total_sandeep_share,
+        "already_received_by_sandeep": already_received_by_sandeep,
+        "pending_to_take_from_partner": pending_to_take_from_partner,
+        "settled_by_work_id": settled_by_work_id,
     }
-
-
-def render_card(title: str, value: str, subtitle: str = ""):
-    """Render a clean KPI card."""
-    sub_html = f'<div class="hisab-sub">{subtitle}</div>' if subtitle else ""
-    st.markdown(
-        f"""
-        <div class="hisab-card">
-            <div class="hisab-title">{title}</div>
-            <div class="hisab-value">{value}</div>
-            {sub_html}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 # ============================================================================
@@ -442,7 +364,7 @@ if "data" not in st.session_state:
 
 
 # ============================================================================
-# 6. SIDEBAR NAVIGATION & PARTNERSHIP SWITCHER
+# 6. SIDEBAR NAVIGATION
 # ============================================================================
 with st.sidebar:
     st.title("📒 Partnership Hisab")
@@ -459,8 +381,9 @@ with st.sidebar:
         "Menu",
         options=[
             "📊 Summary (Hisab)",
-            "➕ Add Entry",
-            "💸 Extra Payouts",
+            "📅 1. Daily Order & Number Entry",
+            "🏦 2. Add Settlement",
+            "💵 3. Payment Received",
             "📜 History & Delete",
         ],
         index=0,
@@ -471,7 +394,7 @@ with st.sidebar:
     if storage_label.startswith("GitHub"):
         st.success(f"☁️ Auto-Save: {storage_label}")
     else:
-        st.warning("💾 Local Save Only (Add GitHub Secrets for cloud save)")
+        st.warning("💾 Local Save Only (Add GitHub Secrets)")
 
     if st.session_state.get("load_err"):
         st.error(st.session_state["load_err"])
@@ -483,448 +406,482 @@ with st.sidebar:
         st.session_state["load_err"] = load_err
         st.rerun()
 
-    if st.button("☁️ Test & Save File to GitHub Now", use_container_width=True):
+    if st.button("☁️ Test & Save File to GitHub", use_container_width=True):
         ok, msg = save_data(st.session_state["data"])
         if ok:
             st.success(msg)
         else:
             st.error(msg)
 
-# Active partnership data & calculations
 pdata = st.session_state["data"][active_partnership]
-hisab = calculate_hisab(pdata, partner_name)
+summary = calculate_summary(pdata)
 
 
 # ============================================================================
 # 7. PAGE 1: SUMMARY (HISAB)
 # ============================================================================
 if page == "📊 Summary (Hisab)":
-    st.header(f"📊 {active_partnership} — Simple Hisab")
+    st.header(f"📊 {active_partnership} — Hisab Summary")
+    st.caption(f"All settlements arrive in **{partner_name}'s bank account**.")
 
-    # Top Row: Orders & Settlement Overview
+    # Main Action Banners: Exact Amount Sandeep Has to Take vs Partner's Share
+    b1, b2 = st.columns(2)
+    with b1:
+        pending_take = summary["pending_to_take_from_partner"]
+        st.markdown(
+            f"""
+            <div class="take-banner">
+                <div style="font-size:0.95rem; font-weight:600; opacity:0.85;">
+                    💰 AMOUNT SANDEEP HAS TO TAKE FROM {partner_name.upper()}
+                </div>
+                <div style="font-size:2.1rem; font-weight:800; margin:6px 0;">
+                    {format_inr(pending_take)}
+                </div>
+                <div style="font-size:0.88rem; opacity:0.85;">
+                    Total Sandeep Share: <strong>{format_inr(summary['total_sandeep_share'])}</strong>
+                    (Number Cost: {format_inr(summary['settled_sandeep_number'])} + 50% Profit: {format_inr(summary['total_profit_each'])})<br>
+                    Already Received from {partner_name}: <strong>{format_inr(summary['already_received_by_sandeep'])}</strong>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with b2:
+        st.markdown(
+            f"""
+            <div class="partner-banner">
+                <div style="font-size:0.95rem; font-weight:600; opacity:0.85;">
+                    🏦 {partner_name.upper()}'S TOTAL SHARE (KEEPS FROM SETTLEMENT)
+                </div>
+                <div style="font-size:2.1rem; font-weight:800; margin:6px 0;">
+                    {format_inr(summary['total_partner_share'])}
+                </div>
+                <div style="font-size:0.88rem; opacity:0.85;">
+                    Order Investment Back: <strong>{format_inr(summary['settled_partner_investment'])}</strong><br>
+                    + 50% Profit Share: <strong>{format_inr(summary['total_profit_each'])}</strong>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # KPI Row
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         render_card(
-            "Total Orders Placed",
-            f"{hisab['total_orders_placed']:,}",
-            f"Settled: {hisab['total_orders_settled']:,} | Pending: {hisab['pending_orders']:,}",
+            "Orders Overview",
+            f"{summary['total_orders_placed']:,}",
+            f"Settled: {summary['total_orders_settled']:,} | Pending: {summary['pending_orders']:,}",
         )
     with c2:
         render_card(
-            f"{partner_name}'s Order Investment",
-            format_inr(hisab["total_investment"]),
-            f"Returned: {format_inr(hisab['total_investment_returned'])}",
+            f"Total Settlement ({partner_name} Bank)",
+            format_inr(summary["total_settlement_received"]),
+            f"Net Profit: {format_inr(summary['total_net_profit'])}",
         )
     with c3:
         render_card(
-            "Sandeep's Number Expense",
-            format_inr(hisab["total_number_expense"]),
-            f"Paid to Sandeep: {format_inr(hisab['total_expense_paid_to_sandeep'])}",
+            f"{partner_name}'s Total Order Paid",
+            format_inr(summary["total_partner_order_paid"]),
+            f"Settled Back: {format_inr(summary['settled_partner_investment'])}",
         )
     with c4:
         render_card(
-            "Total Settlement Received",
-            format_inr(hisab["total_settlement"]),
-            f"{partner_name} Bank: {format_inr(hisab['settlement_in_partner_bank'])} | Sandeep Bank: {format_inr(hisab['settlement_in_sandeep_bank'])}",
+            "Sandeep's Total Number Paid",
+            format_inr(summary["total_sandeep_number_paid"]),
+            f"Settled Back: {format_inr(summary['settled_sandeep_number'])}",
         )
 
-    st.subheader("Step-by-Step Settlement & Profit Division")
-
-    # Step 1: Partner Investment
-    st.markdown(
-        f"""
-        <div class="step-box-blue">
-            <strong>Step 1 — {partner_name}'s Investment (Order Payments)</strong><br>
-            Total Invested: <strong>{format_inr(hisab['total_investment'])}</strong>
-            &nbsp;|&nbsp; Paid Back So Far: <strong>{format_inr(hisab['total_investment_returned'])}</strong>
-            &nbsp;|&nbsp; Pending Investment Balance: <strong>{format_inr(hisab['pending_investment'])}</strong><br>
-            <span style="font-size:0.86rem; opacity:0.8;">
-                You decide how much of this investment to pay back to {partner_name} at every settlement.
-            </span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Step 2: Sandeep's Number Purchase Expense
-    st.markdown(
-        f"""
-        <div class="step-box-amber">
-            <strong>Step 2 — Sandeep's Business Expense (Number Purchase)</strong><br>
-            Total Number Expense: <strong>{format_inr(hisab['total_number_expense'])}</strong>
-            &nbsp;|&nbsp; Paid to Sandeep: <strong>{format_inr(hisab['total_expense_paid_to_sandeep'])}</strong>
-            &nbsp;|&nbsp; Pending to Pay Sandeep: <strong>{format_inr(hisab['pending_expense_to_sandeep'])}</strong><br>
-            <span style="font-size:0.86rem; opacity:0.8;">
-                Number purchase is a business expense and is paid back to Sandeep before dividing profit.
-            </span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Step 3: Profit Split (50-50)
-    st.markdown(
-        f"""
-        <div class="step-box">
-            <strong>Step 3 — Remaining Cash to Divide 50-50 (Profit Pool)</strong><br>
-            Settlement ({format_inr(hisab['total_settlement'])})
-            − Investment Paid ({format_inr(hisab['total_investment_returned'])})
-            − Number Expense Paid ({format_inr(hisab['total_expense_paid_to_sandeep'])})
-            = <strong>{format_inr(hisab['cash_left_for_profit'])}</strong><br>
-            <strong>Sandeep's 50% Share:</strong> {format_inr(hisab['cash_profit_each'])}
-            (Taken: {format_inr(hisab['sandeep_profit_taken'])} | Pending: <strong>{format_inr(hisab['sandeep_pending_profit'])}</strong>)<br>
-            <strong>{partner_name}'s 50% Share:</strong> {format_inr(hisab['cash_profit_each'])}
-            (Taken: {format_inr(hisab['partner_profit_taken'])} | Pending: <strong>{format_inr(hisab['partner_pending_profit'])}</strong>)
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Overall True Net Profit Note
-    st.divider()
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("#### 📌 What Sandeep Needs to Receive")
-        sandeep_total_pending = (
-            max(0.0, hisab["pending_expense_to_sandeep"])
-            + max(0.0, hisab["sandeep_pending_profit"])
-        )
-        st.info(
-            f"**Pending Number Expense:** {format_inr(hisab['pending_expense_to_sandeep'])}\n\n"
-            f"**Pending 50% Profit Share:** {format_inr(hisab['sandeep_pending_profit'])}\n\n"
-            f"**Total Pending for Sandeep:** {format_inr(sandeep_total_pending)}"
-        )
-
-    with col_b:
-        st.markdown(f"#### 📌 What {partner_name} Needs to Receive")
-        partner_total_pending = (
-            max(0.0, hisab["pending_investment"])
-            + max(0.0, hisab["partner_pending_profit"])
-        )
-        st.info(
-            f"**Pending Order Investment:** {format_inr(hisab['pending_investment'])}\n\n"
-            f"**Pending 50% Profit Share:** {format_inr(hisab['partner_pending_profit'])}\n\n"
-            f"**Total Pending for {partner_name}:** {format_inr(partner_total_pending)}"
-        )
-
-    # True Profit Check (after 100% of all investments & expenses)
-    if hisab["true_net_profit"] >= 0:
-        st.success(
-            f"📈 **Overall Net Business Profit (after 100% Investment + Number Expense):** "
-            f"{format_inr(hisab['true_net_profit'])} "
-            f"(Each Partner's True 50% Profit: {format_inr(hisab['true_profit_each'])})"
-        )
+    # Recent Settlements Table
+    st.subheader("🏦 Settlement-Wise Share Breakdown")
+    if pdata["settlements"]:
+        rows = []
+        for s in reversed(pdata["settlements"]):
+            rows.append(
+                {
+                    "Settlement Date": s.get("date"),
+                    "Work Date": s.get("work_date", "Custom"),
+                    "Orders": s.get("orders_settled", 0),
+                    "Settlement (₹)": s.get("settlement_amount", 0.0),
+                    f"{partner_name} Inv. (₹)": s.get("partner_invested", 0.0),
+                    "Sandeep Num. (₹)": s.get("sandeep_invested", 0.0),
+                    "50% Profit Each (₹)": s.get("profit_each", 0.0),
+                    f"{partner_name} Share (₹)": s.get("partner_total_share", 0.0),
+                    "Take by Sandeep (₹)": s.get("sandeep_total_share", 0.0),
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
-        st.warning(
-            f"⏳ **Recovery Status:** Total Settlement ({format_inr(hisab['total_settlement'])}) is currently "
-            f"{format_inr(abs(hisab['true_net_profit']))} below Total Investment + Number Expense "
-            f"({format_inr(hisab['total_investment'] + hisab['total_number_expense'])}). "
-            f"You have **{hisab['pending_orders']} pending orders** awaiting settlement."
-        )
+        st.info("No settlements added yet. Go to **📅 1. Daily Order & Number Entry** first, then **🏦 2. Add Settlement**.")
 
 
 # ============================================================================
-# 8. PAGE 2: ADD ENTRY (ORDERS / NUMBER PURCHASE / SETTLEMENT)
+# 8. PAGE 2: DAILY ORDER & NUMBER ENTRY
 # ============================================================================
-elif page == "➕ Add Entry":
-    st.header(f"➕ Add Entry — {active_partnership}")
-
-    tab_order, tab_expense, tab_settlement = st.tabs(
-        [
-            f"🛒 1. Order Placed ({partner_name} Investment)",
-            "📱 2. Number Purchase (Sandeep Expense)",
-            "🏦 3. Settlement Received",
-        ]
+elif page == "📅 1. Daily Order & Number Entry":
+    st.header(f"📅 Daily Order & Number Entry — {active_partnership}")
+    st.write(
+        f"Enter each date's **Order Price** (paid by **{partner_name}**) and "
+        f"**Number Rate** (paid by **Sandeep**)."
     )
 
-    # --- TAB 1: ORDER PLACED (PARTNER INVESTMENT) ---
-    with tab_order:
-        st.subheader(f"Order Place Payment by {partner_name} (Investment)")
-        with st.form("add_order_form", clear_on_submit=True):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                o_date = st.date_input("Date", value=date.today(), key="order_date")
-            with col2:
-                o_count = st.number_input(
-                    "Total Orders Placed", min_value=1, step=1, value=10
-                )
-            with col3:
-                o_amount = st.number_input(
-                    "Total Amount Paid (₹)", min_value=0.0, step=100.0, value=0.0
-                )
-
-            o_notes = st.text_input("Notes (Optional)", placeholder="e.g., Today's orders placed")
-            submitted_order = st.form_submit_button("💾 Save Order Investment", use_container_width=True)
-
-            if submitted_order:
-                if o_amount <= 0:
-                    st.error("Please enter an amount greater than 0.")
-                else:
-                    entry = {
-                        "id": str(uuid.uuid4())[:8],
-                        "date": str(o_date),
-                        "partner": partner_name,
-                        "orders_count": int(o_count),
-                        "amount": round(float(o_amount), 2),
-                        "notes": o_notes.strip(),
-                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    }
-                    pdata["orders"].append(entry)
-                    ok, msg = save_data(st.session_state["data"])
-                    if ok:
-                        st.success(f"✅ Saved {o_count} orders ({format_inr(o_amount)}). {msg}")
-                    else:
-                        st.error(msg)
-
-    # --- TAB 2: NUMBER PURCHASE (SANDEEP EXPENSE) ---
-    with tab_expense:
-        st.subheader("Number Purchase by Sandeep (Business Expense)")
-        with st.form("add_expense_form", clear_on_submit=True):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                e_date = st.date_input("Date", value=date.today(), key="exp_date")
-            with col2:
-                e_count = st.number_input(
-                    "Numbers / Accounts Bought (Optional)", min_value=0, step=1, value=0
-                )
-            with col3:
-                e_amount = st.number_input(
-                    "Total Amount Paid by Sandeep (₹)", min_value=0.0, step=50.0, value=0.0
-                )
-
-            e_notes = st.text_input("Notes (Optional)", placeholder="e.g., Purchased 50 numbers @ ₹15")
-            submitted_exp = st.form_submit_button("💾 Save Number Expense", use_container_width=True)
-
-            if submitted_exp:
-                if e_amount <= 0:
-                    st.error("Please enter an amount greater than 0.")
-                else:
-                    entry = {
-                        "id": str(uuid.uuid4())[:8],
-                        "date": str(e_date),
-                        "paid_by": "Sandeep",
-                        "count": int(e_count),
-                        "amount": round(float(e_amount), 2),
-                        "notes": e_notes.strip(),
-                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    }
-                    pdata["expenses"].append(entry)
-                    ok, msg = save_data(st.session_state["data"])
-                    if ok:
-                        st.success(f"✅ Saved Number Purchase expense ({format_inr(e_amount)}). {msg}")
-                    else:
-                        st.error(msg)
-
-    # --- TAB 3: SETTLEMENT RECEIVED ---
-    with tab_settlement:
-        st.subheader("Record Bank Settlement & Decide Payouts")
-        st.caption(
-            f"Current Pending Investment ({partner_name}): **{format_inr(hisab['pending_investment'])}** "
-            f"| Current Pending Number Expense (Sandeep): **{format_inr(hisab['pending_expense_to_sandeep'])}** "
-            f"| Pending Orders: **{hisab['pending_orders']}**"
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        w_date = st.date_input("Work Date", value=date.today(), key="w_date")
+    with col2:
+        w_orders = st.number_input("Number of Orders", min_value=1, step=1, value=50, key="w_orders")
+    with col3:
+        w_order_price = st.number_input(
+            f"Order Price / Order (₹) — {partner_name}",
+            min_value=0.0,
+            step=1.0,
+            value=124.0,
+            key="w_order_price",
+        )
+    with col4:
+        w_number_rate = st.number_input(
+            "Number Rate / Order (₹) — Sandeep",
+            min_value=0.0,
+            step=1.0,
+            value=15.0,
+            key="w_number_rate",
         )
 
-        # Live inputs outside form so user sees instant profit division preview before saving
+    partner_total = round(w_orders * w_order_price, 2)
+    sandeep_total = round(w_orders * w_number_rate, 2)
+
+    st.info(
+        f"**Live Daily Cost Preview for {w_orders} Orders on {w_date}:**\n\n"
+        f"- **{partner_name} Pays (Orders):** {w_orders} × {format_inr(w_order_price)} = **{format_inr(partner_total)}**\n"
+        f"- **Sandeep Pays (Numbers):** {w_orders} × {format_inr(w_number_rate)} = **{format_inr(sandeep_total)}**\n"
+        f"- **Total Daily Investment:** **{format_inr(partner_total + sandeep_total)}**"
+    )
+
+    w_notes = st.text_input("Notes (Optional)", placeholder="e.g., Today's batch", key="w_notes")
+
+    if st.button("💾 Save Daily Entry", type="primary", use_container_width=True):
+        entry = {
+            "id": str(uuid.uuid4())[:8],
+            "date": str(w_date),
+            "orders_count": int(w_orders),
+            "order_price": round(float(w_order_price), 2),
+            "number_rate": round(float(w_number_rate), 2),
+            "partner_total": partner_total,
+            "sandeep_total": sandeep_total,
+            "notes": w_notes.strip(),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        pdata["daily_work"].append(entry)
+        ok, msg = save_data(st.session_state["data"])
+        if ok:
+            st.success(f"✅ Saved {w_orders} orders for {w_date}. {msg}")
+            st.rerun()
+        else:
+            st.error(msg)
+
+    # Show recent daily entries below
+    if pdata["daily_work"]:
+        st.divider()
+        st.subheader("Recent Daily Entries")
+        settled_map = summary["settled_by_work_id"]
+        rows = []
+        for w in reversed(pdata["daily_work"]):
+            settled_cnt = settled_map.get(w["id"], 0)
+            rem_cnt = max(0, int(w.get("orders_count", 0)) - settled_cnt)
+            rows.append(
+                {
+                    "Work Date": w.get("date"),
+                    "Orders": w.get("orders_count"),
+                    "Settled": settled_cnt,
+                    "Pending": rem_cnt,
+                    f"Order Price ({partner_name})": w.get("order_price"),
+                    f"{partner_name} Paid (₹)": w.get("partner_total"),
+                    "Number Rate (Sandeep)": w.get("number_rate"),
+                    "Sandeep Paid (₹)": w.get("sandeep_total"),
+                    "Notes": w.get("notes", ""),
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+# ============================================================================
+# 9. PAGE 3: ADD SETTLEMENT (ALWAYS RECEIVED IN PARTNER'S BANK)
+# ============================================================================
+elif page == "🏦 2. Add Settlement":
+    st.header(f"🏦 Add Settlement — {active_partnership}")
+    st.caption(
+        f"Settlement money is received in **{partner_name}'s bank**. "
+        f"Select the work date (or custom rate), enter orders received & settlement amount, "
+        f"and see the exact share for **{partner_name}** and **Sandeep**."
+    )
+
+    settled_map = summary["settled_by_work_id"]
+
+    # Build work date selector options
+    work_options = {"Custom Rate / Unknown Work Date": None}
+    for w in reversed(pdata["daily_work"]):
+        wid = w["id"]
+        total_o = int(w.get("orders_count", 0))
+        done_o = settled_map.get(wid, 0)
+        rem_o = max(0, total_o - done_o)
+        label = (
+            f"{w['date']} | {total_o} Orders (Pending: {rem_o}) | "
+            f"Order ₹{w['order_price']} | Number ₹{w['number_rate']}"
+        )
+        work_options[label] = w
+
+    selected_work_label = st.selectbox(
+        "Which Work Date is this Settlement For?",
+        options=list(work_options.keys()),
+    )
+    selected_work = work_options[selected_work_label]
+
+    # Default rates and order count from selected work date
+    if selected_work is not None:
+        wid = selected_work["id"]
+        rem_orders = max(1, int(selected_work["orders_count"]) - settled_map.get(wid, 0))
+        default_order_price = float(selected_work["order_price"])
+        default_number_rate = float(selected_work["number_rate"])
+        work_date_str = selected_work["date"]
+        work_id_str = wid
+    else:
+        rem_orders = 10
+        default_order_price = 124.0
+        default_number_rate = 15.0
+        work_date_str = "Custom / Unknown"
+        work_id_str = ""
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        s_date = st.date_input("Settlement Received Date", value=date.today(), key="s_date")
+    with col2:
+        s_orders = st.number_input(
+            "Number of Orders Received in Settlement",
+            min_value=1,
+            step=1,
+            value=int(rem_orders),
+            key=f"s_orders_{work_id_str}",
+        )
+    with col3:
+        s_amount = st.number_input(
+            f"Settlement Amount Received in {partner_name}'s Bank (₹)",
+            min_value=0.0,
+            step=100.0,
+            value=0.0,
+            key="s_amount",
+        )
+
+    # Rate inputs (auto-filled from chosen Work Date, editable if needed)
+    r1, r2 = st.columns(2)
+    with r1:
+        used_order_price = st.number_input(
+            f"Order Price Applied ({partner_name}) (₹ / order)",
+            min_value=0.0,
+            step=1.0,
+            value=default_order_price,
+            key=f"used_op_{work_id_str}",
+        )
+    with r2:
+        used_number_rate = st.number_input(
+            "Number Rate Applied (Sandeep) (₹ / order)",
+            min_value=0.0,
+            step=1.0,
+            value=default_number_rate,
+            key=f"used_nr_{work_id_str}",
+        )
+
+    # Exact Live Settlement Calculation
+    partner_invested = round(s_orders * used_order_price, 2)
+    sandeep_invested = round(s_orders * used_number_rate, 2)
+    net_profit = round(s_amount - partner_invested - sandeep_invested, 2)
+    profit_each = round(net_profit / 2.0, 2)
+
+    partner_total_share = round(partner_invested + profit_each, 2)
+    sandeep_total_share = round(sandeep_invested + profit_each, 2)
+
+    st.divider()
+    st.subheader("Live Settlement Split Preview")
+
+    p_col1, p_col2 = st.columns(2)
+    with p_col1:
+        st.markdown(
+            f"""
+            <div class="take-banner">
+                <div style="font-size:0.9rem; font-weight:600;">
+                    👉 TAKE FROM {partner_name.upper()} (SANDEEP'S SHARE)
+                </div>
+                <div style="font-size:1.9rem; font-weight:800; margin:4px 0;">
+                    {format_inr(sandeep_total_share)}
+                </div>
+                <div style="font-size:0.86rem;">
+                    1. Sandeep's Number Cost ({s_orders} × ₹{used_number_rate:g}): <strong>{format_inr(sandeep_invested)}</strong><br>
+                    2. Sandeep's 50% Profit Share: <strong>{format_inr(profit_each)}</strong>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with p_col2:
+        st.markdown(
+            f"""
+            <div class="partner-banner">
+                <div style="font-size:0.9rem; font-weight:600;">
+                    🏦 {partner_name.upper()}'S SHARE (KEEPS IN BANK)
+                </div>
+                <div style="font-size:1.9rem; font-weight:800; margin:4px 0;">
+                    {format_inr(partner_total_share)}
+                </div>
+                <div style="font-size:0.86rem;">
+                    1. {partner_name}'s Order Cost ({s_orders} × ₹{used_order_price:g}): <strong>{format_inr(partner_invested)}</strong><br>
+                    2. {partner_name}'s 50% Profit Share: <strong>{format_inr(profit_each)}</strong>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.caption(
+        f"Check: Settlement ({format_inr(s_amount)}) = "
+        f"{partner_name}'s Share ({format_inr(partner_total_share)}) + "
+        f"Sandeep's Share ({format_inr(sandeep_total_share)}) | "
+        f"Total Net Profit = {format_inr(net_profit)}"
+    )
+
+    s_notes = st.text_input("Notes (Optional)", placeholder="e.g., Bank UTR / settlement note", key="s_notes")
+
+    if st.button("💾 Save Settlement", type="primary", use_container_width=True):
+        if s_amount <= 0:
+            st.error("Please enter a Settlement Amount greater than 0.")
+        else:
+            entry = {
+                "id": str(uuid.uuid4())[:8],
+                "date": str(s_date),
+                "work_id": work_id_str,
+                "work_date": work_date_str,
+                "orders_settled": int(s_orders),
+                "settlement_amount": round(float(s_amount), 2),
+                "order_price": round(float(used_order_price), 2),
+                "number_rate": round(float(used_number_rate), 2),
+                "partner_invested": partner_invested,
+                "sandeep_invested": sandeep_invested,
+                "net_profit": net_profit,
+                "profit_each": profit_each,
+                "partner_total_share": partner_total_share,
+                "sandeep_total_share": sandeep_total_share,
+                "notes": s_notes.strip(),
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            }
+            pdata["settlements"].append(entry)
+            ok, msg = save_data(st.session_state["data"])
+            if ok:
+                st.success(
+                    f"✅ Saved settlement of {format_inr(s_amount)}! "
+                    f"Sandeep takes {format_inr(sandeep_total_share)} from {partner_name}. {msg}"
+                )
+                st.rerun()
+            else:
+                st.error(msg)
+
+
+# ============================================================================
+# 10. PAGE 4: PAYMENT RECEIVED FROM PARTNER
+# ============================================================================
+elif page == "💵 3. Payment Received":
+    st.header(f"💵 Payment Received from {partner_name}")
+    st.write(
+        f"Record whenever **{partner_name}** transfers money to **Sandeep** "
+        f"(UPI / Bank / Cash) to clear Sandeep's pending share."
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        render_card("Total Sandeep Share (All Settlements)", format_inr(summary["total_sandeep_share"]))
+    with c2:
+        render_card(f"Already Received from {partner_name}", format_inr(summary["already_received_by_sandeep"]))
+    with c3:
+        render_card(
+            f"Still Pending to Take from {partner_name}",
+            format_inr(summary["pending_to_take_from_partner"]),
+        )
+
+    with st.form("received_payment_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
-            s_date = st.date_input("Settlement Received Date", value=date.today(), key="set_date")
-            s_orders = st.number_input(
-                "Number of Orders Received in Settlement",
-                min_value=0,
-                step=1,
-                value=0,
-                key="set_orders",
-            )
+            r_date = st.date_input("Payment Date", value=date.today())
         with col2:
-            s_received_by = st.selectbox(
-                "Received in Which Partner's Account?",
-                options=[partner_name, "Sandeep"],
-                key="set_rec_by",
-            )
-            s_amount = st.number_input(
-                "Total Settlement Amount Received (₹)",
+            default_amt = max(0.0, round(float(summary["pending_to_take_from_partner"]), 2))
+            r_amount = st.number_input(
+                f"Amount Received from {partner_name} (₹)",
                 min_value=0.0,
                 step=100.0,
-                value=0.0,
-                key="set_amount",
+                value=default_amt,
             )
+        r_notes = st.text_input("Notes (Optional)", placeholder="e.g., GPay / PhonePe / Cash")
+        submitted = st.form_submit_button("💾 Save Payment Received", use_container_width=True)
 
-        st.markdown("##### Decide Amounts to Pay from This Settlement:")
-        col3, col4 = st.columns(2)
-        with col3:
-            s_exp_to_sandeep = st.number_input(
-                "1. Number Purchase Expense Paid to Sandeep (₹)",
-                min_value=0.0,
-                step=50.0,
-                value=max(0.0, round(float(hisab["pending_expense_to_sandeep"]), 2)),
-                help="Sandeep's number purchase expense to recover from this settlement.",
-                key="set_exp_sandeep",
-            )
-        with col4:
-            s_inv_to_partner = st.number_input(
-                f"2. Investment Amount Paid to {partner_name} (₹)",
-                min_value=0.0,
-                step=100.0,
-                value=0.0,
-                help=f"Decide how much of {partner_name}'s invested money to return from this settlement.",
-                key="set_inv_partner",
-            )
-
-        # Live preview calculation
-        preview_left = s_amount - s_exp_to_sandeep - s_inv_to_partner
-        preview_each = preview_left / 2.0
-
-        st.info(
-            f"**Live Settlement Preview:**\n\n"
-            f"- Settlement Received: **{format_inr(s_amount)}** ({s_orders} orders)\n"
-            f"- Paid to Sandeep (Number Expense): **{format_inr(s_exp_to_sandeep)}**\n"
-            f"- Paid to {partner_name} (Investment Return): **{format_inr(s_inv_to_partner)}**\n"
-            f"- **Remaining Amount to Divide 50-50:** **{format_inr(preview_left)}** "
-            f"→ Sandeep: **{format_inr(preview_each)}** | {partner_name}: **{format_inr(preview_each)}**"
-        )
-
-        s_notes = st.text_input("Notes (Optional)", placeholder="e.g., Bank UTR / settlement remark", key="set_notes")
-
-        if st.button("💾 Save Settlement", type="primary", use_container_width=True):
-            if s_amount <= 0:
-                st.error("Please enter a Settlement Amount greater than 0.")
+        if submitted:
+            if r_amount <= 0:
+                st.error("Please enter an amount greater than 0.")
             else:
                 entry = {
                     "id": str(uuid.uuid4())[:8],
-                    "date": str(s_date),
-                    "orders_settled": int(s_orders),
-                    "amount": round(float(s_amount), 2),
-                    "received_by": s_received_by,
-                    "expense_paid_to_sandeep": round(float(s_exp_to_sandeep), 2),
-                    "investment_paid_to_partner": round(float(s_inv_to_partner), 2),
-                    "profit_pool": round(float(preview_left), 2),
-                    "profit_each": round(float(preview_each), 2),
-                    "notes": s_notes.strip(),
+                    "date": str(r_date),
+                    "from_partner": partner_name,
+                    "amount": round(float(r_amount), 2),
+                    "notes": r_notes.strip(),
                     "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 }
-                pdata["settlements"].append(entry)
+                pdata["received_from_partner"].append(entry)
                 ok, msg = save_data(st.session_state["data"])
                 if ok:
-                    st.success(f"✅ Settlement of {format_inr(s_amount)} saved! {msg}")
+                    st.success(f"✅ Recorded {format_inr(r_amount)} received from {partner_name}. {msg}")
                     st.rerun()
                 else:
                     st.error(msg)
 
 
 # ============================================================================
-# 9. PAGE 3: EXTRA MANUAL PAYOUTS
-# ============================================================================
-elif page == "💸 Extra Payouts":
-    st.header(f"💸 Extra Manual Payouts — {active_partnership}")
-    st.write(
-        "Use this page whenever you manually pay out **Profit Share**, return extra **Investment**, "
-        "or pay **Number Expense** outside of a settlement entry."
-    )
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        render_card(f"Pending Investment ({partner_name})", format_inr(hisab["pending_investment"]))
-    with c2:
-        render_card("Pending Number Expense (Sandeep)", format_inr(hisab["pending_expense_to_sandeep"]))
-    with c3:
-        render_card(
-            "Pending Profit Share",
-            f"S: {format_inr(hisab['sandeep_pending_profit'])}",
-            f"{partner_name}: {format_inr(hisab['partner_pending_profit'])}",
-        )
-
-    with st.form("manual_payout_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            p_date = st.date_input("Date", value=date.today())
-            p_type = st.selectbox(
-                "Payout Type",
-                options=[
-                    "Profit Share Paid",
-                    "Investment Return to Partner",
-                    "Number Expense to Sandeep",
-                ],
-            )
-        with col2:
-            p_partner = st.selectbox(
-                "Paid To",
-                options=["Sandeep", partner_name],
-                help="For 'Investment Return to Partner' it applies to your partner; for 'Number Expense' it applies to Sandeep.",
-            )
-            p_amount = st.number_input("Amount Paid (₹)", min_value=0.0, step=100.0, value=0.0)
-
-        p_notes = st.text_input("Notes (Optional)", placeholder="e.g., UPI / Cash paid")
-        submitted_payout = st.form_submit_button("💾 Save Manual Payout", use_container_width=True)
-
-        if submitted_payout:
-            if p_amount <= 0:
-                st.error("Please enter an amount greater than 0.")
-            else:
-                # Enforce exact recipient for Investment / Expense types
-                final_partner = p_partner
-                if p_type == "Investment Return to Partner":
-                    final_partner = partner_name
-                elif p_type == "Number Expense to Sandeep":
-                    final_partner = "Sandeep"
-
-                entry = {
-                    "id": str(uuid.uuid4())[:8],
-                    "date": str(p_date),
-                    "payout_type": p_type,
-                    "partner": final_partner,
-                    "amount": round(float(p_amount), 2),
-                    "notes": p_notes.strip(),
-                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                }
-                pdata["payouts"].append(entry)
-                ok, msg = save_data(st.session_state["data"])
-                if ok:
-                    st.success(f"✅ Recorded {p_type} ({format_inr(p_amount)}) to {final_partner}. {msg}")
-                else:
-                    st.error(msg)
-
-
-# ============================================================================
-# 10. PAGE 4: HISTORY & DELETE
+# 11. PAGE 5: HISTORY & DELETE
 # ============================================================================
 elif page == "📜 History & Delete":
-    st.header(f"📜 History — {active_partnership}")
+    st.header(f"📜 History & Delete — {active_partnership}")
 
-    t1, t2, t3, t4 = st.tabs(
+    t1, t2, t3 = st.tabs(
         [
-            f"🛒 Orders Placed ({len(pdata['orders'])})",
-            f"📱 Number Purchases ({len(pdata['expenses'])})",
+            f"📅 Daily Work ({len(pdata['daily_work'])})",
             f"🏦 Settlements ({len(pdata['settlements'])})",
-            f"💸 Extra Payouts ({len(pdata['payouts'])})",
+            f"💵 Payments Received ({len(pdata['received_from_partner'])})",
         ]
     )
 
-    def render_history_section(items: list, section_key: str, columns_map: dict):
+    def render_history_tab(items: list, section_key: str, columns_map: dict, amount_field: str):
         if not items:
             st.info("No records yet.")
             return
 
         df = pd.DataFrame(items)
         display_cols = [c for c in columns_map.keys() if c in df.columns]
-        df_show = df[display_cols].rename(columns=columns_map)
-        st.dataframe(df_show, use_container_width=True, hide_index=True)
+        st.dataframe(
+            df[display_cols].rename(columns=columns_map),
+            use_container_width=True,
+            hide_index=True,
+        )
 
         st.markdown("##### Delete a Record")
         options = {
-            f"{item.get('id')} | {item.get('date')} | {format_inr(item.get('amount', 0))} | {item.get('notes', '')}": item.get("id")
+            f"{item.get('id')} | {item.get('date')} | {format_inr(item.get(amount_field, 0))} | {item.get('notes', '')}": item.get("id")
             for item in reversed(items)
         }
-        selected_label = st.selectbox(
+        selected = st.selectbox(
             "Select record to delete",
             options=list(options.keys()),
-            key=f"del_select_{section_key}",
+            key=f"del_sel_{section_key}",
         )
-        confirm_del = st.checkbox(
-            "Confirm delete this record",
-            key=f"del_confirm_{section_key}",
-        )
-        if st.button("🗑️ Delete Selected Record", key=f"del_btn_{section_key}", disabled=not confirm_del):
-            target_id = options[selected_label]
+        confirm = st.checkbox("Confirm delete this record", key=f"del_chk_{section_key}")
+        if st.button("🗑️ Delete Selected Record", key=f"del_btn_{section_key}", disabled=not confirm):
+            target_id = options[selected]
             pdata[section_key] = [x for x in items if x.get("id") != target_id]
             ok, msg = save_data(st.session_state["data"])
             if ok:
@@ -934,60 +891,52 @@ elif page == "📜 History & Delete":
                 st.error(msg)
 
     with t1:
-        render_history_section(
-            pdata["orders"],
-            "orders",
+        render_history_tab(
+            pdata["daily_work"],
+            "daily_work",
             {
                 "id": "ID",
-                "date": "Date",
-                "partner": "Partner",
-                "orders_count": "Orders Placed",
-                "amount": "Investment Paid (₹)",
+                "date": "Work Date",
+                "orders_count": "Orders",
+                "order_price": f"Order Price ({partner_name})",
+                "partner_total": f"{partner_name} Paid (₹)",
+                "number_rate": "Number Rate (Sandeep)",
+                "sandeep_total": "Sandeep Paid (₹)",
                 "notes": "Notes",
             },
+            "partner_total",
         )
 
     with t2:
-        render_history_section(
-            pdata["expenses"],
-            "expenses",
-            {
-                "id": "ID",
-                "date": "Date",
-                "paid_by": "Paid By",
-                "count": "Numbers Bought",
-                "amount": "Expense Amount (₹)",
-                "notes": "Notes",
-            },
-        )
-
-    with t3:
-        render_history_section(
+        render_history_tab(
             pdata["settlements"],
             "settlements",
             {
                 "id": "ID",
-                "date": "Date",
-                "orders_settled": "Orders Settled",
-                "amount": "Total Settlement (₹)",
-                "received_by": "Received By",
-                "expense_paid_to_sandeep": "Sandeep Expense Paid (₹)",
-                "investment_paid_to_partner": f"{partner_name} Investment Paid (₹)",
+                "date": "Settlement Date",
+                "work_date": "Work Date",
+                "orders_settled": "Orders",
+                "settlement_amount": "Settlement (₹)",
+                "partner_invested": f"{partner_name} Inv. (₹)",
+                "sandeep_invested": "Sandeep Num. (₹)",
                 "profit_each": "50% Profit Each (₹)",
+                "partner_total_share": f"{partner_name} Share (₹)",
+                "sandeep_total_share": "Sandeep Takes (₹)",
                 "notes": "Notes",
             },
+            "settlement_amount",
         )
 
-    with t4:
-        render_history_section(
-            pdata["payouts"],
-            "payouts",
+    with t3:
+        render_history_tab(
+            pdata["received_from_partner"],
+            "received_from_partner",
             {
                 "id": "ID",
                 "date": "Date",
-                "payout_type": "Type",
-                "partner": "Paid To",
-                "amount": "Amount (₹)",
+                "from_partner": "From Partner",
+                "amount": "Amount Received (₹)",
                 "notes": "Notes",
             },
+            "amount",
         )
