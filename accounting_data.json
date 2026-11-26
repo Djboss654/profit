@@ -26,6 +26,24 @@
         "profit_each": 3925.5,
         "notes": "",
         "created_at": "2026-11-25 09:07"
+      },
+      {
+        "id": "395cf97b",
+        "date": "2026-11-26",
+        "work_id": "3443e89b",
+        "work_date": "2026-11-14",
+        "orders_settled": 89,
+        "settlement_amount": 17730.0,
+        "order_price": 101.0,
+        "number_rate": 10.0,
+        "partner_invested": 8989.0,
+        "sandeep_invested": 890.0,
+        "net_profit": 7851.0,
+        "profit_each": 3925.5,
+        "partner_total_share": 12914.5,
+        "sandeep_total_share": 4815.5,
+        "notes": "",
+        "created_at": "2026-11-26 04:12"
       }
     ],
     "received_from_partner": []
