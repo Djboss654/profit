@@ -1,27 +1,6 @@
 {
   "Sandeep & Harshal": {
-    "orders": [
-      {
-        "id": "ad95a6f3",
-        "date": "2026-11-11",
-        "partner": "Harshal",
-        "orders_count": 89,
-        "amount": 8989.0,
-        "notes": "first orders",
-        "created_at": "2026-11-19 16:04"
-      }
-    ],
-    "expenses": [
-      {
-        "id": "949d16b0",
-        "date": "2026-11-11",
-        "paid_by": "Sandeep",
-        "count": 89,
-        "amount": 890.0,
-        "notes": "89 numbers",
-        "created_at": "2026-11-19 16:01"
-      }
-    ],
+    "daily_work": [],
     "settlements": [
       {
         "id": "7ddf9fa6",
@@ -37,12 +16,23 @@
         "created_at": "2026-11-25 09:07"
       }
     ],
-    "payouts": []
+    "received_from_partner": []
   },
   "Sandeep & Vishnu": {
-    "orders": [],
-    "expenses": [],
+    "daily_work": [
+      {
+        "id": "75353c2c",
+        "date": "2026-11-14",
+        "orders_count": 106,
+        "order_price": 101.0,
+        "number_rate": 10.0,
+        "partner_total": 10706.0,
+        "sandeep_total": 1060.0,
+        "notes": "",
+        "created_at": "2026-11-26 04:06"
+      }
+    ],
     "settlements": [],
-    "payouts": []
+    "received_from_partner": []
   }
 }
